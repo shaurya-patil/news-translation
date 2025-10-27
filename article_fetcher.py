@@ -1,5 +1,6 @@
 """
-Article Fetcher - ACTUALLY WORKING VERSION
+Article Fetcher - FIXED VERSION
+Fetches full article content from URLs
 """
 
 import requests
@@ -18,24 +19,41 @@ class ArticleFetcher:
     """Fetch full article content from URLs"""
     
     def __init__(self, timeout=15):
+        """Initialize fetcher with timeout"""
         self.timeout = timeout
     
     def fetch_article(self, url):
-        """Fetch full article content"""
+        """
+        Fetch full article content from URL
+        
+        Args:
+            url (str): Article URL
+        
+        Returns:
+            dict: Article data with success status
+        """
         try:
-            time.sleep(1)  # Polite delay
+            # Polite delay
+            time.sleep(1)
             
-            response = requests.get(url, headers=HEADERS, timeout=self.timeout, allow_redirects=True)
+            # Fetch page
+            response = requests.get(
+                url, 
+                headers=HEADERS, 
+                timeout=self.timeout, 
+                allow_redirects=True
+            )
             response.raise_for_status()
             
+            # Parse HTML
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # Remove junk
+            # Remove unwanted elements
             for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 
                             'iframe', 'noscript', 'form', 'button', 'img', 'svg']):
                 tag.decompose()
             
-            # Get article content
+            # Extract article content
             content = self._extract_content(soup)
             
             if not content or len(content) < 200:
@@ -45,7 +63,7 @@ class ArticleFetcher:
                     'url': url
                 }
             
-            # Clean it
+            # Clean text
             content = self._clean_text(content)
             
             return {
@@ -65,19 +83,23 @@ class ArticleFetcher:
                 error = f"HTTP {e.response.status_code}"
             return {'success': False, 'error': error, 'url': url}
         
+        except requests.exceptions.Timeout:
+            return {'success': False, 'error': 'Request timed out', 'url': url}
+        
         except Exception as e:
             return {'success': False, 'error': f"Error: {str(e)[:50]}", 'url': url}
     
     def _extract_content(self, soup):
-        """Extract article text"""
-        # Try article tag
+        """Extract article text using multiple strategies"""
+        
+        # Strategy 1: article tag
         article = soup.find('article')
         if article:
             text = self._get_paragraphs(article)
             if len(text) > 500:
                 return text
         
-        # Try common classes
+        # Strategy 2: Common article classes
         for selector in [
             {'class': re.compile(r'article.*body|post.*content|entry.*content|story.*body', re.I)},
             {'id': re.compile(r'article|content|post', re.I)},
@@ -88,14 +110,14 @@ class ArticleFetcher:
                 if len(text) > 500:
                     return text
         
-        # Try main tag
+        # Strategy 3: main tag
         main = soup.find('main')
         if main:
             text = self._get_paragraphs(main)
             if len(text) > 500:
                 return text
         
-        # Find div with most paragraphs
+        # Strategy 4: Find div with most paragraphs
         best = ""
         for div in soup.find_all('div'):
             paras = div.find_all('p', recursive=False)
@@ -107,7 +129,7 @@ class ArticleFetcher:
         if len(best) > 500:
             return best
         
-        # Last resort: all paragraphs
+        # Strategy 5: All paragraphs (last resort)
         paras = soup.find_all('p')
         if len(paras) >= 5:
             texts = [p.get_text(strip=True) for p in paras if len(p.get_text(strip=True)) > 40]
@@ -132,7 +154,7 @@ class ArticleFetcher:
         text = re.sub(r'https?://\S+', '', text)
         text = re.sub(r'www\.\S+', '', text)
         
-        # Remove junk patterns
+        # Remove unwanted patterns
         patterns = [
             r'Continue reading.*',
             r'Read more.*',
@@ -152,6 +174,15 @@ class ArticleFetcher:
 
 
 def fetch_full_article(url, timeout=15):
-    """Helper function"""
-    fetcher = ArticleFetcher(timeout)
+    """
+    Helper function to fetch article
+    
+    Args:
+        url (str): Article URL
+        timeout (int): Request timeout
+    
+    Returns:
+        dict: Article data
+    """
+    fetcher = ArticleFetcher(timeout=timeout)
     return fetcher.fetch_article(url)

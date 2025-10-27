@@ -1,6 +1,7 @@
 """
 News Fetcher Module
 Handles fetching news from NewsAPI with various filters
+Fixed to work properly with all countries
 """
 
 import requests
@@ -8,7 +9,21 @@ from datetime import datetime, timedelta
 
 # Configuration
 NEWS_API_KEY = "bd2b48063bdf4040a5122edf3cfd0f3a"
-BASE_URL = "https://newsapi.org/v2"
+BASE_URL = "https://newsapi.org/v2/"
+
+# Country to domain mapping for fallback
+COUNTRY_DOMAINS = {
+    "us": "cnn.com,nytimes.com,washingtonpost.com,reuters.com,apnews.com",
+    "gb": "bbc.co.uk,theguardian.com,telegraph.co.uk,independent.co.uk",
+    "ca": "cbc.ca,theglobeandmail.com,nationalpost.com",
+    "au": "abc.net.au,smh.com.au,theaustralian.com.au",
+    "in": "timesofindia.indiatimes.com,hindustantimes.com,indianexpress.com",
+    "de": "spiegel.de,faz.net,sueddeutsche.de,welt.de",
+    "fr": "lemonde.fr,lefigaro.fr,liberation.fr",
+    "it": "corriere.it,repubblica.it,lastampa.it",
+    "jp": "asahi.com,mainichi.jp,yomiuri.co.jp",
+    "kr": "chosun.com,joins.com,donga.com"
+}
 
 
 class NewsFetcher:
@@ -26,7 +41,7 @@ class NewsFetcher:
     
     def get_top_headlines(self, country="us", category=None, query=None, page_size=10):
         """
-        Fetch top headlines
+        Fetch top headlines with automatic fallback
         
         Args:
             country (str): Country code (us, gb, in, etc.)
@@ -37,22 +52,114 @@ class NewsFetcher:
         Returns:
             dict: API response with articles
         """
+        # Try primary method first
+        result = self._try_top_headlines(country, category, query, page_size)
+        
+        # If failed or no articles, try fallback
+        if result.get('status') != 'ok' or not result.get('articles'):
+            print(f"Primary method failed for {country}, trying fallback...")
+            result = self._try_everything_fallback(country, category, query, page_size)
+        
+        return result
+    
+    def _try_top_headlines(self, country, category, query, page_size):
+        """
+        Try fetching from /top-headlines endpoint
+        
+        NOTE: NewsAPI restriction - cannot use 'country' with 'language' parameter
+        """
         endpoint = f"{self.base_url}/top-headlines"
         
         params = {
             "apiKey": self.api_key,
-            "pageSize": page_size,
-            "language": "en"
+            "pageSize": page_size
         }
         
+        # Add country (this automatically determines language)
         if country:
             params["country"] = country
         
+        # Add category
         if category and category != "all":
             params["category"] = category
         
+        # Add search query
         if query:
             params["q"] = query
+        
+        try:
+            response = requests.get(endpoint, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Check if we got valid articles
+            if data.get('status') == 'ok' and data.get('articles'):
+                return data
+            
+            return data
+            
+        except requests.exceptions.RequestException as e:
+            return {
+                'status': 'error',
+                'message': f"Request failed: {str(e)}",
+                'articles': []
+            }
+    
+    def _try_everything_fallback(self, country, category, query, page_size):
+        """
+        Fallback to /everything endpoint with domain filtering
+        
+        This works better for countries where /top-headlines has limited coverage
+        """
+        endpoint = f"{self.base_url}/everything"
+        
+        params = {
+            "apiKey": self.api_key,
+            "pageSize": page_size,
+            "sortBy": "publishedAt",
+            "language": "en"  # Can use language in /everything
+        }
+        
+        # Add domain filtering for specific countries
+        if country in COUNTRY_DOMAINS:
+            params["domains"] = COUNTRY_DOMAINS[country]
+        
+        # Build query
+        query_parts = []
+        
+        if query:
+            query_parts.append(query)
+        
+        if category and category != "all":
+            query_parts.append(category)
+        
+        # Add country name to query if no specific query
+        if not query:
+            country_names = {
+                "us": "United States OR America OR US",
+                "gb": "United Kingdom OR Britain OR UK",
+                "ca": "Canada OR Canadian",
+                "au": "Australia OR Australian",
+                "in": "India OR Indian",
+                "de": "Germany OR German",
+                "fr": "France OR French",
+                "it": "Italy OR Italian",
+                "jp": "Japan OR Japanese",
+                "kr": "Korea OR Korean"
+            }
+            if country in country_names:
+                query_parts.append(country_names[country])
+        
+        if query_parts:
+            params["q"] = " ".join(query_parts)
+        else:
+            # Default query if nothing specified
+            params["q"] = "news"
+        
+        # Add date range (last 3 days)
+        today = datetime.now()
+        three_days_ago = today - timedelta(days=3)
+        params["from"] = three_days_ago.strftime("%Y-%m-%d")
         
         try:
             response = requests.get(endpoint, params=params, timeout=10)
@@ -61,7 +168,7 @@ class NewsFetcher:
         except requests.exceptions.RequestException as e:
             return {
                 'status': 'error',
-                'message': str(e),
+                'message': f"Fallback failed: {str(e)}",
                 'articles': []
             }
     
@@ -222,106 +329,62 @@ def get_article_statistics(articles):
 # Example usage and testing
 if __name__ == "__main__":
     print("="*70)
-    print("NEWS FETCHER MODULE - DEMO")
+    print("NEWS FETCHER MODULE - MULTI-COUNTRY TEST")
     print("="*70)
     
     # Initialize fetcher
     fetcher = NewsFetcher()
     
+    # Test multiple countries
+    test_countries = [
+        ("us", "United States"),
+        ("gb", "United Kingdom"),
+        ("in", "India"),
+        ("jp", "Japan"),
+        ("de", "Germany")
+    ]
+    
     print("\n" + "="*70)
-    print("1. FETCHING TOP HEADLINES (US - Technology)")
+    print("TESTING MULTIPLE COUNTRIES")
+    print("="*70)
+    
+    for country_code, country_name in test_countries:
+        print(f"\n--- {country_name} ({country_code}) ---")
+        
+        result = fetcher.get_top_headlines(
+            country=country_code,
+            category="technology",
+            page_size=3
+        )
+        
+        if result.get('status') == 'ok':
+            articles = result.get('articles', [])
+            print(f"✅ Found {len(articles)} articles")
+            
+            if articles:
+                print(f"\nSample article:")
+                article = format_article(articles[0])
+                print(f"  Title: {article['title'][:60]}...")
+                print(f"  Source: {article['source']}")
+        else:
+            print(f"❌ Failed: {result.get('message')}")
+    
+    print("\n" + "="*70)
+    print("TESTING SEARCH WITH QUERY")
     print("="*70)
     
     result = fetcher.get_top_headlines(
-        country="us",
-        category="technology",
+        country="jp",
+        query="technology",
         page_size=5
     )
     
     if result.get('status') == 'ok':
         articles = result.get('articles', [])
-        print(f"\nFound {len(articles)} articles")
-        
-        for i, article in enumerate(articles[:3], 1):
-            formatted = format_article(article)
-            print(f"\n{i}. {formatted['title']}")
-            print(f"   Source: {formatted['source']}")
-            print(f"   Published: {formatted['published_at']}")
-            print(f"   Content length: {len(formatted['full_text'])} chars")
+        print(f"✅ Found {len(articles)} articles about technology in Japan")
     else:
-        print(f"Error: {result.get('message')}")
+        print(f"⚠ Search result: {result.get('message')}")
     
     print("\n" + "="*70)
-    print("2. SEARCHING NEWS (AI keyword)")
-    print("="*70)
-    
-    # Search for AI-related news from last week
-    today = datetime.now()
-    week_ago = today - timedelta(days=7)
-    
-    result = fetcher.search_news(
-        query="artificial intelligence",
-        from_date=week_ago.strftime("%Y-%m-%d"),
-        to_date=today.strftime("%Y-%m-%d"),
-        page_size=5
-    )
-    
-    if result.get('status') == 'ok':
-        articles = result.get('articles', [])
-        print(f"\nFound {len(articles)} articles about AI")
-        
-        for i, article in enumerate(articles[:3], 1):
-            formatted = format_article(article)
-            print(f"\n{i}. {formatted['title']}")
-            print(f"   Source: {formatted['source']}")
-    else:
-        print(f"Error: {result.get('message')}")
-    
-    print("\n" + "="*70)
-    print("3. FILTERING ARTICLES")
-    print("="*70)
-    
-    result = fetcher.get_top_headlines(country="us", page_size=10)
-    
-    if result.get('status') == 'ok':
-        all_articles = result.get('articles', [])
-        filtered = filter_articles(all_articles, min_length=100)
-        
-        print(f"\nTotal articles: {len(all_articles)}")
-        print(f"After filtering (min 100 chars): {len(filtered)}")
-    
-    print("\n" + "="*70)
-    print("4. ARTICLE STATISTICS")
-    print("="*70)
-    
-    result = fetcher.get_top_headlines(country="us", page_size=10)
-    
-    if result.get('status') == 'ok':
-        articles = result.get('articles', [])
-        stats = get_article_statistics(articles)
-        
-        print(f"\nTotal articles: {stats['total']}")
-        print(f"Number of sources: {stats['source_count']}")
-        print(f"Average content length: {stats['avg_length']:.0f} chars")
-        print(f"Min length: {stats['min_length']} chars")
-        print(f"Max length: {stats['max_length']} chars")
-        print(f"\nSources: {', '.join(stats['sources'][:5])}")
-    
-    print("\n" + "="*70)
-    print("5. GETTING AVAILABLE SOURCES")
-    print("="*70)
-    
-    result = fetcher.get_sources(category="technology", language="en")
-    
-    if result.get('status') == 'ok':
-        sources = result.get('sources', [])
-        print(f"\nFound {len(sources)} technology news sources")
-        
-        for i, source in enumerate(sources[:5], 1):
-            print(f"{i}. {source.get('name')} - {source.get('description', '')[:50]}...")
-    else:
-        print(f"Error: {result.get('message')}")
-    
-    print("\n" + "="*70)
-    print("âœ“ News fetcher module ready!")
+    print("✓ Multi-country news fetcher ready!")
     print("="*70)

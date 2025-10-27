@@ -193,7 +193,7 @@ if st.session_state.articles:
             
             # Image
             if article.get('urlToImage'):
-                st.image(article['urlToImage'], use_column_width=True)
+                st.image(article['urlToImage'], use_container_width=True)
             
             # Translated title
             title_key = f"t_{idx}_{target_lang}"
@@ -233,32 +233,20 @@ if st.session_state.articles:
                     full_text = re.sub(r'\s+', ' ', full_text).strip()
                     
                     if len(full_text) > 150:
-                        # Summarize
-                        # Adaptive summary lengths based on article size
-                        content_length = len(full_text.split())
-
-                        def get_summary_lengths(length_type, words):
-                            if length_type.lower() == "short":
-                                return {
-                                    "max_length": max(60, int(words * 0.4)),
-                                    "min_length": max(30, int(words * 0.2))
-                                }
-                            elif length_type.lower() == "medium":
-                                return {
-                                    "max_length": max(120, int(words * 0.55)),
-                                    "min_length": max(60, int(words * 0.3))
-                                }
-                            else:  # long
-                                return {
-                                    "max_length": max(180, int(words * 0.7)),
-                                    "min_length": max(80, int(words * 0.4))
-                                }
-
-                        length_config = get_summary_lengths(summary_length, content_length)
-
-                        # use this when calling summarizer
-                        sum_result = summarizer.summarize(full_text, **length_config)
-
+                        # Summarize with dynamic length
+                        lengths = {
+                            "Short": (150, 70),
+                            "Medium": (280, 120),
+                            "Long": (450, 200)
+                        }
+                        max_len, min_len = lengths[summary_length]
+                        
+                        # Adjust max_length if text is too short
+                        text_word_count = len(full_text.split())
+                        if text_word_count < max_len:
+                            max_len = max(text_word_count - 10, min_len)
+                        
+                        sum_result = summarizer.summarize(full_text, max_length=max_len, min_length=min(min_len, max_len-10), preprocess=False)
                         
                         if not sum_result.get('error'):
                             summary_text = sum_result['summary']
