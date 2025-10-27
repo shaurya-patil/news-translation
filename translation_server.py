@@ -1,11 +1,12 @@
 """
 Streamlit News Translator App
 Fetches news from NewsAPI and translates to any language using mBART model
+Includes summarization feature
 """
 
 import streamlit as st
 import requests
-from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
+from transformers import MBartForConditionalGeneration, MBart50TokenizerFast, pipeline
 from langdetect import detect
 import torch
 import re
@@ -50,6 +51,24 @@ def load_model():
     tokenizer = MBart50TokenizerFast.from_pretrained(MODEL_NAME)
     model = MBartForConditionalGeneration.from_pretrained(MODEL_NAME).to(DEVICE)
     return tokenizer, model
+
+@st.cache_resource
+def load_summarizer():
+    """Load summarization model (cached)"""
+    summarizer = pipeline("summarization", model="facebook/bart-large-cnn", device=0 if DEVICE == "cuda" else -1)
+    return summarizer
+
+def summarize_text(text, summarizer, max_length=130, min_length=30):
+    """Summarize text in English"""
+    if not text.strip():
+        return text
+    
+    try:
+        # BART summarizer works best with English text
+        summary = summarizer(text, max_length=max_length, min_length=min_length, do_sample=False)
+        return summary[0]['summary_text']
+    except Exception as e:
+        return f"Error summarizing: {str(e)}"
 
 def detect_lang(text, fallback="en_XX"):
     """Detect language of text"""
@@ -142,21 +161,16 @@ st.markdown("*Get the latest news and translate to any language*")
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    api_key_input = st.text_input(
-        "NewsAPI Key",
-        value=NEWS_API_KEY,
-        type="password",
-        help="Get your free API key from https://newsapi.org"
-    )
-    if api_key_input:
-        NEWS_API_KEY = api_key_input
-    
-    st.divider()
-    
     target_lang = st.selectbox(
         "Translate to:",
         options=list(LANGUAGES.keys()),
         format_func=lambda x: LANGUAGES[x],
+        index=0
+    )
+    
+    summary_lang = st.selectbox(
+        "Summarize in:",
+        options=["Original (English)", "Translated Language"],
         index=0
     )
     
@@ -190,10 +204,20 @@ if 'model_loaded' not in st.session_state:
         st.session_state.model_loaded = True
         st.session_state.tokenizer = tokenizer
         st.session_state.model = model
-    st.success(f"✅ Model loaded on {DEVICE}")
+    st.success(f"✅ Translation model loaded on {DEVICE}")
 else:
     tokenizer = st.session_state.tokenizer
     model = st.session_state.model
+
+# Load summarizer
+if 'summarizer_loaded' not in st.session_state:
+    with st.spinner("Loading summarization model..."):
+        summarizer = load_summarizer()
+        st.session_state.summarizer_loaded = True
+        st.session_state.summarizer = summarizer
+    st.success(f"✅ Summarization model loaded")
+else:
+    summarizer = st.session_state.summarizer
 
 # Fetch and display news
 if st.session_state.get('fetch_news', False):
@@ -240,10 +264,28 @@ if st.session_state.get('fetch_news', False):
                         translated = translate_text(full_text, target_lang, tokenizer, model)
                         st.session_state[f'translation_{idx}'] = translated
                 
+                # Summarize button
+                if st.button(f"📝 Summarize", key=f"summarize_{idx}"):
+                    with st.spinner("Summarizing..."):
+                        summary = summarize_text(full_text, summarizer)
+                        
+                        # If user wants summary in translated language
+                        if summary_lang == "Translated Language" and target_lang != "en_XX":
+                            with st.spinner("Translating summary..."):
+                                summary = translate_text(summary, target_lang, tokenizer, model)
+                        
+                        st.session_state[f'summary_{idx}'] = summary
+                
                 # Show translation if available
                 if f'translation_{idx}' in st.session_state:
                     with st.expander(f"🌍 Translation ({LANGUAGES[target_lang]})", expanded=True):
                         st.write(st.session_state[f'translation_{idx}'])
+                
+                # Show summary if available
+                if f'summary_{idx}' in st.session_state:
+                    lang_display = LANGUAGES[target_lang] if summary_lang == "Translated Language" else "English"
+                    with st.expander(f"📝 Summary ({lang_display})", expanded=True):
+                        st.write(st.session_state[f'summary_{idx}'])
                 
                 st.divider()
     else:
