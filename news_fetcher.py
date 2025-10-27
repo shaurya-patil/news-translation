@@ -323,5 +323,5 @@ if __name__ == "__main__":
         print(f"Error: {result.get('message')}")
     
     print("\n" + "="*70)
-    print("✓ News fetcher module ready!")
+    print("âœ“ News fetcher module ready!")
     print("="*70)
