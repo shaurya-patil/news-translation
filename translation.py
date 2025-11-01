@@ -1,17 +1,21 @@
 """
-Translation Module
-Handles text translation using mBART model with chunking support
+Translation Module - SEAMLESS MULTI-LANGUAGE SUPPORT
+Automatically detects and uses fine-tuned model
+Falls back gracefully to base model if needed
 """
 
 import torch
+import os
+import json
 from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
 from preprocessing import preprocess_text, detect_language, split_into_sentences
 
 # Configuration
-MODEL_NAME = "facebook/mbart-large-50-many-to-many-mmt"
+BASE_MODEL = "facebook/mbart-large-50-many-to-many-mmt"
+FINETUNED_MODEL = "./mbart_multilang_news"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MAX_LENGTH = 1024
-CHUNK_SIZE = 500  # Characters per chunk
+CHUNK_SIZE = 500
 
 # Language names mapping
 LANGUAGE_NAMES = {
@@ -26,41 +30,98 @@ LANGUAGE_NAMES = {
 
 
 class TranslationModel:
-    """Wrapper class for mBART translation model"""
+    """Seamless translation with automatic model detection"""
     
-    def __init__(self, model_name=MODEL_NAME, device=DEVICE):
+    def __init__(self, model_name=None, device=DEVICE, use_finetuned=True):
         """
-        Initialize the translation model
+        Initialize translation model with automatic fallback
         
         Args:
-            model_name (str): Hugging Face model name
-            device (str): Device to load model on ('cuda' or 'cpu')
+            model_name (str): Specific model path (optional)
+            device (str): 'cuda' or 'cpu'
+            use_finetuned (bool): Try fine-tuned model first
         """
-        print(f"Loading translation model: {model_name}")
         self.device = device
-        self.tokenizer = MBart50TokenizerFast.from_pretrained(model_name)
-        self.model = MBartForConditionalGeneration.from_pretrained(model_name).to(device)
-        print(f"✓ Model loaded on {device}")
+        self.is_finetuned = False
+        self.trained_languages = []
+        
+        # Determine model to load
+        if model_name:
+            model_to_load = model_name
+        elif use_finetuned and self._check_finetuned_exists():
+            model_to_load = FINETUNED_MODEL
+            self.is_finetuned = True
+        else:
+            model_to_load = BASE_MODEL
+        
+        # Load model
+        self._load_model(model_to_load)
+        
+        # Load language config if fine-tuned
+        if self.is_finetuned:
+            self._load_language_config()
+    
+    def _check_finetuned_exists(self):
+        """Check if fine-tuned model exists"""
+        if not os.path.exists(FINETUNED_MODEL):
+            return False
+        # Check for either safetensors or pytorch_model.bin
+        has_safetensors = os.path.exists(os.path.join(FINETUNED_MODEL, "model.safetensors"))
+        has_pytorch = os.path.exists(os.path.join(FINETUNED_MODEL, "pytorch_model.bin"))
+        return has_safetensors or has_pytorch
+    
+    def _load_model(self, model_path):
+        """Load model with fallback"""
+        try:
+            print(f"Loading translation model: {model_path}")
+            self.tokenizer = MBart50TokenizerFast.from_pretrained(model_path)
+            self.model = MBartForConditionalGeneration.from_pretrained(model_path).to(self.device)
+            
+            if self.is_finetuned:
+                print(f"✅ Fine-tuned multi-language model loaded")
+                print(f"   📍 Path: {model_path}")
+                print(f"   🎓 Transfer learning applied")
+            else:
+                print(f"✅ Base mBART-50 model loaded")
+            
+            print(f"✅ Device: {self.device}")
+        
+        except Exception as e:
+            if self.is_finetuned:
+                print(f"⚠️  Fine-tuned model failed, falling back to base model...")
+                print(f"   Error: {str(e)[:100]}")
+                self.is_finetuned = False
+                self._load_model(BASE_MODEL)
+            else:
+                raise Exception(f"Failed to load model: {e}")
+    
+    def _load_language_config(self):
+        """Load language configuration from fine-tuned model"""
+        config_file = os.path.join(FINETUNED_MODEL, "language_config.json")
+        
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+                    self.trained_languages = config.get('trained_languages', [])
+                    
+                    if self.trained_languages:
+                        print(f"\n   📚 Trained on {len(self.trained_languages)} languages:")
+                        for lang in self.trained_languages:
+                            lang_name = LANGUAGE_NAMES.get(lang, lang)
+                            print(f"      • {lang_name} ({lang})")
+                        print(f"   📊 Total samples: {config.get('total_samples', 'N/A')}")
+                        print(f"   🎓 Method: {config.get('training_method', 'Transfer Learning')}")
+            except Exception as e:
+                print(f"   ⚠️  Could not load config: {e}")
     
     def translate_chunk(self, text, src_lang, target_lang):
-        """
-        Translate a single chunk of text
-        
-        Args:
-            text (str): Text to translate
-            src_lang (str): Source language code
-            target_lang (str): Target language code
-        
-        Returns:
-            str: Translated text
-        """
+        """Translate a single chunk"""
         if not text.strip():
             return text
         
-        # Set source language
         self.tokenizer.src_lang = src_lang
         
-        # Tokenize
         encoded = self.tokenizer(
             text,
             return_tensors="pt",
@@ -68,7 +129,6 @@ class TranslationModel:
             max_length=MAX_LENGTH
         ).to(self.device)
         
-        # Generate translation
         forced_bos_token_id = self.tokenizer.lang_code_to_id[target_lang]
         generated = self.model.generate(
             **encoded,
@@ -76,28 +136,26 @@ class TranslationModel:
             max_length=MAX_LENGTH
         )
         
-        # Decode
         translated = self.tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
         return translated
     
     def translate(self, text, target_lang, preprocess=True):
         """
-        Translate text with automatic chunking for long texts
+        Seamless translation with automatic optimization
         
         Args:
             text (str): Text to translate
             target_lang (str): Target language code
-            preprocess (bool): Whether to preprocess text before translation
+            preprocess (bool): Apply preprocessing
         
         Returns:
-            dict: Dictionary containing translation results
+            dict: Translation results with metadata
         """
-        # Preprocess if requested
         original_text = text
+        
         if preprocess:
             text = preprocess_text(text)
         
-        # Detect source language
         src_lang = detect_language(text)
         
         # Check if translation needed
@@ -107,13 +165,18 @@ class TranslationModel:
                 'translated': text,
                 'source_lang': src_lang,
                 'target_lang': target_lang,
-                'preprocessed': preprocess
+                'preprocessed': preprocess,
+                'model_type': 'fine-tuned' if self.is_finetuned else 'base',
+                'optimized': False
             }
         
-        # Split into sentences for better chunking
+        # Check if target language was in training (for fine-tuned model)
+        is_optimized = self.is_finetuned and target_lang in self.trained_languages
+        
+        # Split into sentences
         sentences = split_into_sentences(text)
         
-        # Group sentences into chunks based on CHUNK_SIZE
+        # Create chunks
         chunks = []
         current_chunk = []
         current_length = 0
@@ -122,7 +185,6 @@ class TranslationModel:
             sentence_len = len(sentence)
             
             if current_length + sentence_len > CHUNK_SIZE and current_chunk:
-                # Save current chunk and start new one
                 chunks.append(' '.join(current_chunk))
                 current_chunk = [sentence]
                 current_length = sentence_len
@@ -130,18 +192,17 @@ class TranslationModel:
                 current_chunk.append(sentence)
                 current_length += sentence_len
         
-        # Add remaining chunk
         if current_chunk:
             chunks.append(' '.join(current_chunk))
         
-        # Translate each chunk
+        # Translate chunks
         translated_chunks = []
         for i, chunk in enumerate(chunks):
-            print(f"Translating chunk {i+1}/{len(chunks)}...")
+            if len(chunks) > 1:
+                print(f"Translating chunk {i+1}/{len(chunks)}...")
             translated = self.translate_chunk(chunk, src_lang, target_lang)
             translated_chunks.append(translated)
         
-        # Combine translated chunks
         final_translation = ' '.join(translated_chunks)
         
         return {
@@ -150,77 +211,88 @@ class TranslationModel:
             'source_lang': src_lang,
             'target_lang': target_lang,
             'num_chunks': len(chunks),
-            'preprocessed': preprocess
+            'preprocessed': preprocess,
+            'model_type': 'fine-tuned' if self.is_finetuned else 'base',
+            'optimized': is_optimized,
+            'optimization_note': f'✅ Optimized for {LANGUAGE_NAMES.get(target_lang, target_lang)}' if is_optimized else ''
         }
+    
+    def get_model_info(self):
+        """Get comprehensive model information"""
+        info = {
+            'model_type': 'Fine-tuned Multi-Language' if self.is_finetuned else 'Base mBART-50',
+            'is_finetuned': self.is_finetuned,
+            'device': self.device,
+            'status': '✅ Custom-trained model active' if self.is_finetuned else '⚠️ Using base pretrained model'
+        }
+        
+        if self.is_finetuned:
+            info['trained_languages'] = self.trained_languages
+            info['num_languages'] = len(self.trained_languages)
+            info['training_method'] = 'Transfer Learning on News Commentary'
+        
+        return info
+    
+    def is_language_optimized(self, lang_code):
+        """Check if a language was specifically trained"""
+        return self.is_finetuned and lang_code in self.trained_languages
 
 
 def batch_translate(texts, target_lang, model=None):
-    """
-    Translate multiple texts
-    
-    Args:
-        texts (list): List of texts to translate
-        target_lang (str): Target language code
-        model (TranslationModel): Pre-loaded model (optional)
-    
-    Returns:
-        list: List of translation results
-    """
+    """Batch translation with progress tracking"""
     if model is None:
         model = TranslationModel()
     
     results = []
-    for i, text in enumerate(texts):
-        print(f"\nTranslating text {i+1}/{len(texts)}")
+    total = len(texts)
+    
+    for i, text in enumerate(texts, 1):
+        print(f"\nTranslating {i}/{total}...")
         result = model.translate(text, target_lang)
         results.append(result)
     
     return results
 
 
-# Example usage and testing
+# Example usage
 if __name__ == "__main__":
     print("="*70)
-    print("TRANSLATION MODULE - DEMO")
+    print("SEAMLESS MULTI-LANGUAGE TRANSLATION - DEMO")
     print("="*70)
     
     # Initialize model
     translator = TranslationModel()
     
-    # Test texts
-    test_texts = [
-        "The stock market crashed today, losing over 500 points.",
-        "Scientists have discovered a new exoplanet that could harbor life.",
-        "The government announced new economic policies for the upcoming year."
-    ]
+    # Show model info
+    info = translator.get_model_info()
+    print("\n📊 MODEL INFORMATION")
+    print("-"*70)
+    for key, value in info.items():
+        if key == 'trained_languages' and isinstance(value, list):
+            print(f"{key}:")
+            for lang in value:
+                print(f"  • {LANGUAGE_NAMES.get(lang, lang)} ({lang})")
+        else:
+            print(f"{key}: {value}")
     
-    target_languages = ["hi_IN", "es_XX", "fr_XX"]  # Hindi, Spanish, French
-    
+    # Test translation
     print("\n" + "="*70)
-    print("TRANSLATION EXAMPLES")
+    print("TRANSLATION TEST")
     print("="*70)
     
-    for text in test_texts[:2]:  # Test first 2 texts
-        print(f"\nOriginal (English): {text}")
+    test_text = "The government announced new economic policies today."
+    test_langs = ["hi_IN", "es_XX", "fr_XX", "de_DE", "ja_XX"]
+    
+    print(f"\nOriginal: {test_text}\n")
+    
+    for lang in test_langs:
+        result = translator.translate(test_text, lang, preprocess=False)
+        lang_name = LANGUAGE_NAMES[lang]
         
-        for target_lang in target_languages:
-            result = translator.translate(text, target_lang)
-            lang_name = LANGUAGE_NAMES[target_lang]
-            print(f"\n{lang_name}: {result['translated']}")
-            print(f"  Source: {result['source_lang']} | Target: {result['target_lang']}")
+        print(f"{lang_name:12} → {result['translated']}")
+        if result['optimized']:
+            print(f"             {result['optimization_note']}")
     
     print("\n" + "="*70)
-    print("LONG TEXT CHUNKING TEST")
-    print("="*70)
-    
-    long_text = " ".join(test_texts * 3)  # Create longer text
-    print(f"\nLong text length: {len(long_text)} characters")
-    
-    result = translator.translate(long_text, "hi_IN")
-    print(f"Number of chunks created: {result['num_chunks']}")
-    print(f"Translated successfully: {len(result['translated'])} characters")
-    print(f"\nTranslation preview: {result['translated'][:200]}...")
-    
-    print("\n" + "="*70)
-    print("✓ Translation module ready!")
+    print("✓ Seamless translation ready!")
     print("="*70)
