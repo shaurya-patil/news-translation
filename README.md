@@ -179,8 +179,8 @@ MultilingualTranslation/
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/multilingual-news-platform.git
-cd multilingual-news-platform
+git clone https://github.com/shaurya-patil/news-translation.git
+cd news-translation
 ```
 
 ### Step 2: Install Dependencies
